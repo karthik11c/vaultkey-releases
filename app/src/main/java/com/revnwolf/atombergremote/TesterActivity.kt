@@ -158,7 +158,7 @@ class TesterActivity : Activity() {
     private fun timingTest() {
         logLine("=== Timing test ===")
         var ok = 0
-        val cases = listOf(20, 100, 500, 1500)
+        val cases = listOf(20, 100, 500, 1500) // last one probes the per-call limit
         for (ms in cases) {
             if (cancelled) return
             val pattern = intArrayOf(ms * 500, ms * 500) // half on, half off
@@ -166,24 +166,30 @@ class TesterActivity : Activity() {
             if (r.error == null && r.tookMs >= ms * 0.6) ok++
             SystemClock.sleep(300)
         }
-        logLine(when (ok) {
-            cases.size -> "✓ Driver blocks for the full signal time → HAL is really transmitting"
-            0 -> "✗ Driver returns instantly → HAL accepts calls but probably never fires the LED (ROM blocks 3rd-party IR?)"
-            else -> "? Mixed timings ($ok/${cases.size}) → driver may truncate long signals"
+        logLine(when {
+            ok == cases.size -> "✓ Driver blocks for the full signal time → HAL is really transmitting"
+            ok == 0 -> "✗ Driver returns instantly → HAL accepts calls but probably never fires the LED (ROM blocks 3rd-party IR?)"
+            ok == cases.size - 1 -> "✓ Driver transmits; it rejects signals over ~1 s (normal limit, fan codes are < 0.35 s)"
+            else -> "? Mixed timings ($ok/${cases.size}) → driver may truncate signals"
         })
     }
 
     private fun beacon() {
         logLine("=== Beacon 10 s ===")
         val end = SystemClock.elapsedRealtime() + 10_000
-        var n = 0
+        var sent = 0; var skipped = 0
         while (!cancelled && SystemClock.elapsedRealtime() < end) {
-            val r = tx(38_000, intArrayOf(400_000, 200_000), null)
+            // 200 ms on / 100 ms off: well under the driver's per-call limit
+            val r = tx(38_000, intArrayOf(200_000, 100_000), null)
             if (r.error != null) { logLine("✗ ${r.error}"); return }
-            n++
+            if (r.tookMs < 150) { skipped++; SystemClock.sleep(300) } else sent++
             ui { big.text = "💡 ${((end - SystemClock.elapsedRealtime()) / 1000) + 1}" }
         }
-        logLine("Beacon sent $n bursts. Saw it on camera? Yes → LED works. No → hardware/ROM issue.")
+        logLine(when {
+            sent == 0 -> "✗ Driver returned instantly every time → LED did NOT blink (retry in a few seconds)"
+            skipped > 0 -> "⚠ $sent bursts sent, $skipped returned instantly (driver hiccup)"
+            else -> "✓ $sent bursts sent. Saw it on camera? Yes → LED works. No → hardware/ROM issue."
+        })
     }
 
     private fun sweep() {

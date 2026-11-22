@@ -9,7 +9,6 @@ import android.os.SystemClock
 import android.view.HapticFeedbackConstants
 import android.widget.Button
 import android.widget.TextView
-import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
 
@@ -20,7 +19,6 @@ class MainActivity : Activity() {
     private var mode = SignalMode.DOUBLE
     private var carrierHz = NecEncoder.CARRIER_HZ
     private var deviceInfo = ""
-    private val sender = Executors.newSingleThreadExecutor() // transmit() blocks until sent
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -93,31 +91,28 @@ class MainActivity : Activity() {
         val calls = NecEncoder.calls(button, mode, carrierHz)
         val expectedMs = if (mode == SignalMode.LEGACY) NecEncoder.durationMs(NecEncoder.pattern(button, SignalMode.STANDARD))
                          else calls.sumOf { NecEncoder.durationMs(it) }
-        sender.execute {
-            val t0 = SystemClock.elapsedRealtime()
-            val error = try {
-                calls.forEachIndexed { i, p ->
-                    if (i > 0) SystemClock.sleep(2)
-                    manager.transmit(carrierHz, p)
-                }
-                null
-            } catch (e: Exception) {
-                e.javaClass.simpleName + (e.message?.let { ": $it" } ?: "")
+        // Sent on the main thread, exactly like the third-party app that works on vivo/iQOO.
+        // Blocks the UI for at most ~0.3 s, which is fine for a remote.
+        val t0 = SystemClock.elapsedRealtime()
+        val error = try {
+            calls.forEachIndexed { i, p ->
+                if (i > 0) SystemClock.sleep(2)
+                manager.transmit(carrierHz, p)
             }
-            val took = SystemClock.elapsedRealtime() - t0
-            runOnUiThread {
-                status.text = if (error == null) getString(R.string.sent, label)
-                              else getString(R.string.send_failed, error)
-                // transmit() is synchronous: returning far faster than the pattern length means
-                // the HAL accepted the call but likely never fired the LED.
-                val warn = if (error == null && took < expectedMs / 2) "  ⚠ returned too fast" else ""
-                diag.text = "$deviceInfo\nlast: ${mode.label}, ${took}ms (signal ${expectedMs}ms)$warn"
-            }
+            null
+        } catch (e: Exception) {
+            e.javaClass.simpleName + (e.message?.let { ": $it" } ?: "")
         }
+        val took = SystemClock.elapsedRealtime() - t0
+        status.text = if (error == null) getString(R.string.sent, label)
+                      else getString(R.string.send_failed, error)
+        // transmit() is synchronous: returning far faster than the pattern length means
+        // the HAL accepted the call but likely never fired the LED.
+        val warn = if (error == null && took < expectedMs / 2) "  ⚠ returned too fast" else ""
+        diag.text = "$deviceInfo\nlast: ${mode.label}, ${took}ms (signal ${expectedMs}ms), ${calls.size} call(s), main thread$warn"
     }
 
     override fun onDestroy() {
-        sender.shutdown()
         super.onDestroy()
     }
 }

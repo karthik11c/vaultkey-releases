@@ -31,18 +31,32 @@ enum class SignalMode(val label: String) {
     STANDARD("Standard"),       // one NEC frame, padded with a trailing gap (even-length pattern)
     STRONG("Strong (repeat)"),  // NEC frame + 2 NEC repeat codes, like holding the key briefly
     LEGACY("Legacy (cycles)"),  // STANDARD expressed in carrier cycles (old Samsung/HTC-style HALs)
+    REAL_REMOTE("Real remote replay"), // exact capture of an Atomberg remote (NEC + repeat, real timings)
+    PRONTO("Pronto-style"),     // real-remote timing rounded to whole carrier cycles, like most remote apps
 }
 
 object NecEncoder {
     const val CARRIER_HZ = 38_000
 
-    fun pattern(command: Int, mode: SignalMode, carrierHz: Int = CARRIER_HZ): IntArray {
-        val bytes = intArrayOf(0x00, 0xF3, command and 0xFF, command.inv() and 0xFF)
-        val us = Nec.build(bytes, repeatCodes = if (mode == SignalMode.STRONG) 2 else 0)
-        return if (mode == SignalMode.LEGACY) Nec.toCycles(us, carrierHz) else us
+    fun pattern(button: AtombergButton, mode: SignalMode, carrierHz: Int = CARRIER_HZ): IntArray = when (mode) {
+        SignalMode.STANDARD -> Nec.build(button.bytes)
+        SignalMode.STRONG -> Nec.build(button.bytes, repeatCodes = 2)
+        SignalMode.LEGACY -> Nec.toCycles(Nec.build(button.bytes), carrierHz)
+        SignalMode.REAL_REMOTE -> Captured.CAPTURED[button]
+            ?: Nec.build(button.bytes, repeatCodes = 1, t = NecTiming.REMOTE)
+        SignalMode.PRONTO -> Nec.quantize(Nec.build(button.bytes, repeatCodes = 1, t = NecTiming.REMOTE), carrierHz)
     }
 
     fun durationMs(pattern: IntArray): Long = pattern.sumOf { it.toLong() } / 1000
+}
+
+/** NEC pulse lengths in µs. */
+data class NecTiming(val hdrMark: Int, val hdrSpace: Int, val repeatSpace: Int, val bitMark: Int, val zeroSpace: Int, val oneSpace: Int) {
+    companion object {
+        val SPEC = NecTiming(9000, 4500, 2250, 562, 562, 1687)
+        /** Averages measured from a real Atomberg remote capture. */
+        val REMOTE = NecTiming(9410, 4680, 2340, 600, 580, 1750)
+    }
 }
 
 /** Generic NEC builder with knobs used by the tester's variant sweep. */
@@ -68,20 +82,21 @@ object Nec {
         repeatCodes: Int = 0,
         trailingGap: Boolean = true,
         gap: Int = MAX_GAP,
+        t: NecTiming = NecTiming.SPEC,
     ): IntArray {
         val out = ArrayList<Int>(80 * (frames + 1))
         repeat(frames) { f ->
-            out += HDR_MARK; out += HDR_SPACE
+            out += t.hdrMark; out += t.hdrSpace
             for (b in bytes) for (i in 0 until 8) {
-                out += BIT_MARK
-                out += if (((b shr i) and 1) == 1) ONE_SPACE else ZERO_SPACE
+                out += t.bitMark
+                out += if (((b shr i) and 1) == 1) t.oneSpace else t.zeroSpace
             }
-            out += BIT_MARK
+            out += t.bitMark
             val last = f == frames - 1 && repeatCodes == 0
             if (!last || trailingGap) out += gap
         }
         repeat(repeatCodes) { r ->
-            out += HDR_MARK; out += REPEAT_SPACE; out += BIT_MARK
+            out += t.hdrMark; out += t.repeatSpace; out += t.bitMark
             if (r < repeatCodes - 1 || trailingGap) out += gap
         }
         return out.toIntArray()
@@ -90,6 +105,12 @@ object Nec {
     /** 32-bit value as printed by Arduino IRremote (MSB first), e.g. 0x00CF8976. */
     fun bytesFromMsb32(v: Long) = IntArray(4) { i ->
         Integer.reverse(((v shr (24 - 8 * i)) and 0xFF).toInt()) ushr 24
+    }
+
+    /** Round every duration to whole carrier cycles, as Pronto-based remote apps send them. */
+    fun quantize(us: IntArray, carrierHz: Int): IntArray {
+        val period = 1_000_000.0 / carrierHz
+        return IntArray(us.size) { (Math.round(us[it] / period).coerceAtLeast(1) * period).toInt() }
     }
 
     fun toCycles(us: IntArray, carrierHz: Int) =
@@ -149,4 +170,22 @@ object CodeParser {
     }
 
     private fun String.isHex() = isNotEmpty() && all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }
+}
+
+/**
+ * Raw timings decoded from Broadlink captures of a real Atomberg remote
+ * (github.com/dasshubham762/atomberg-integration, atomberg_ir_codes.py): one NEC frame + one
+ * repeat code. Trailing/inter-frame gaps capped at 40 ms.
+ */
+object Captured {
+    val CAPTURED: Map<AtombergButton, IntArray> = mapOf(
+        AtombergButton.POWER to intArrayOf(9424, 4663, 624, 558, 624, 558, 591, 591, 591, 558, 624, 591, 591, 591, 591, 591, 558, 591, 624, 1740, 591, 1740, 624, 558, 624, 591, 558, 1773, 591, 1740, 624, 1740, 591, 1740, 624, 1740, 591, 591, 591, 591, 558, 624, 591, 1740, 624, 558, 591, 558, 624, 1773, 558, 624, 558, 1773, 624, 1708, 624, 1740, 591, 591, 591, 1773, 558, 1773, 624, 558, 591, 40000, 9391, 2331, 624, 40000),
+        AtombergButton.SPEED_1 to intArrayOf(9391, 4696, 591, 591, 624, 558, 591, 558, 624, 558, 624, 591, 591, 591, 591, 591, 558, 591, 591, 1740, 624, 1740, 624, 558, 624, 558, 591, 1773, 591, 1740, 591, 1773, 591, 1740, 624, 1740, 591, 1773, 558, 591, 591, 1773, 591, 591, 591, 558, 624, 558, 624, 1740, 591, 591, 591, 591, 591, 1740, 624, 558, 624, 1708, 624, 1773, 558, 1773, 591, 591, 624, 40000, 9490, 2331, 591, 40000),
+        AtombergButton.SPEED_2 to intArrayOf(9424, 4696, 591, 591, 624, 558, 591, 558, 624, 558, 624, 591, 591, 591, 558, 624, 558, 591, 591, 1773, 591, 1740, 624, 558, 591, 624, 558, 1773, 591, 1740, 624, 1708, 624, 1740, 591, 624, 558, 591, 591, 591, 591, 591, 591, 1740, 624, 558, 624, 558, 624, 1740, 591, 1740, 591, 1773, 591, 1740, 624, 1708, 624, 591, 591, 1773, 558, 1773, 624, 558, 591, 40000, 9391, 2364, 558, 40000),
+        AtombergButton.SPEED_3 to intArrayOf(9424, 4663, 624, 591, 591, 591, 558, 624, 558, 591, 624, 558, 624, 558, 624, 558, 591, 558, 624, 1773, 558, 1773, 591, 591, 591, 591, 591, 1740, 624, 1708, 624, 1773, 558, 1773, 591, 591, 591, 1740, 624, 558, 624, 1740, 591, 591, 591, 591, 558, 624, 558, 1773, 624, 1708, 624, 558, 624, 1740, 591, 591, 591, 1740, 624, 1740, 591, 1740, 624, 558, 624, 40000, 9424, 2331, 591, 40000),
+        AtombergButton.SPEED_4 to intArrayOf(9424, 4663, 591, 591, 624, 558, 591, 591, 591, 558, 624, 591, 591, 591, 591, 591, 558, 624, 558, 1773, 624, 1708, 624, 558, 624, 558, 591, 1773, 591, 1740, 624, 1740, 591, 1740, 624, 1740, 591, 1773, 558, 591, 591, 591, 591, 1773, 591, 558, 624, 558, 624, 1740, 591, 591, 591, 591, 591, 1740, 624, 1740, 591, 558, 624, 1773, 558, 1773, 591, 591, 591, 40000, 9424, 2331, 624, 40000, 9424, 2331, 624, 40000),
+        AtombergButton.SPEED_5 to intArrayOf(9424, 4696, 591, 591, 591, 591, 591, 591, 558, 624, 591, 558, 624, 558, 624, 558, 624, 558, 591, 1773, 591, 1740, 624, 558, 624, 558, 624, 1708, 624, 1773, 558, 1773, 591, 1740, 624, 558, 624, 558, 591, 591, 591, 1773, 591, 591, 558, 591, 591, 591, 591, 1773, 591, 1740, 624, 1740, 591, 1773, 558, 591, 591, 1773, 591, 1740, 624, 1740, 591, 591, 591, 40000, 9424, 2331, 624, 40000),
+        AtombergButton.BOOST to intArrayOf(9424, 4663, 624, 558, 624, 558, 624, 591, 591, 591, 558, 591, 591, 591, 591, 591, 624, 558, 591, 1740, 624, 1740, 591, 591, 591, 591, 591, 1740, 624, 1740, 591, 1740, 624, 1740, 591, 1773, 558, 1773, 624, 1708, 624, 1740, 591, 591, 591, 591, 591, 591, 591, 1740, 624, 558, 624, 558, 591, 591, 591, 591, 591, 1773, 558, 1773, 624, 1708, 624, 558, 624, 40000, 9391, 2364, 591, 40000),
+        AtombergButton.SLEEP to intArrayOf(9424, 4663, 624, 558, 624, 558, 624, 558, 624, 558, 591, 591, 591, 591, 591, 591, 591, 591, 558, 1773, 624, 1708, 624, 558, 624, 558, 624, 1740, 591, 1773, 558, 1773, 591, 1740, 624, 558, 624, 1708, 624, 1773, 558, 1773, 591, 591, 624, 558, 591, 591, 591, 1740, 624, 1740, 591, 591, 591, 591, 558, 624, 558, 1773, 624, 1708, 624, 1740, 591, 591, 591, 40000, 9391, 2331, 624, 40000),
+    )
 }

@@ -36,7 +36,7 @@ class TesterActivity : Activity() {
     private var ir: ConsumerIrManager? = null
     private val worker = Executors.newSingleThreadExecutor()
     @Volatile private var cancelled = false
-    private var testButton = AtombergButton.SPEED_5
+    private var testButton = AtombergButton.POWER
 
     private lateinit var log: TextView
     private lateinit var big: TextView
@@ -45,19 +45,28 @@ class TesterActivity : Activity() {
     private lateinit var scroll: ScrollView
     private val time = SimpleDateFormat("HH:mm:ss", Locale.US)
 
-    private data class Variant(val name: String, val carrier: Int, val build: (IntArray) -> IntArray)
+    private data class Variant(val name: String, val carrier: Int, val build: (AtombergButton) -> IntArray?)
 
     private val variants = listOf(
-        Variant("NEC 1 frame + gap, 38k", 38_000) { Nec.build(it) },
-        Variant("NEC 1 frame, no gap (odd len), 38k", 38_000) { Nec.build(it, trailingGap = false) },
-        Variant("NEC frame + 2 repeats, 38k", 38_000) { Nec.build(it, repeatCodes = 2) },
-        Variant("NEC 2 full frames, 38k", 38_000) { Nec.build(it, frames = 2) },
-        Variant("NEC 3 full frames, 38k", 38_000) { Nec.build(it, frames = 3) },
-        Variant("NEC frame + gap, 36k", 36_000) { Nec.build(it) },
-        Variant("NEC frame + gap, 40k", 40_000) { Nec.build(it) },
-        Variant("NEC frame + 2 repeats, 36k", 36_000) { Nec.build(it, repeatCodes = 2) },
-        Variant("NEC frame + 2 repeats, 40k", 40_000) { Nec.build(it, repeatCodes = 2) },
-        Variant("NEC 3 frames, 10ms gaps, 38k", 38_000) { Nec.build(it, frames = 3, gap = 10_000) },
+        Variant("NEC 1 frame + gap, 38k", 38_000) { Nec.build(it.bytes) },
+        Variant("NEC 1 frame, no gap (odd len), 38k", 38_000) { Nec.build(it.bytes, trailingGap = false) },
+        Variant("NEC frame + 2 repeats, 38k", 38_000) { Nec.build(it.bytes, repeatCodes = 2) },
+        Variant("NEC 2 full frames, 38k", 38_000) { Nec.build(it.bytes, frames = 2) },
+        Variant("NEC 3 full frames, 38k", 38_000) { Nec.build(it.bytes, frames = 3) },
+        Variant("NEC frame + gap, 36k", 36_000) { Nec.build(it.bytes) },
+        Variant("NEC frame + gap, 40k", 40_000) { Nec.build(it.bytes) },
+        Variant("NEC frame + 2 repeats, 36k", 36_000) { Nec.build(it.bytes, repeatCodes = 2) },
+        Variant("NEC frame + 2 repeats, 40k", 40_000) { Nec.build(it.bytes, repeatCodes = 2) },
+        Variant("NEC 3 frames, 10ms gaps, 38k", 38_000) { Nec.build(it.bytes, frames = 3, gap = 10_000) },
+        Variant("Pronto-style (whole cycles) + 1 repeat, 38k", 38_000) {
+            Nec.quantize(Nec.build(it.bytes, repeatCodes = 1), 38_000) },
+        Variant("Real-remote timing + 1 repeat, 38k", 38_000) {
+            Nec.build(it.bytes, repeatCodes = 1, t = NecTiming.REMOTE) },
+        Variant("Real-remote timing, Pronto-style, 38k", 38_000) {
+            Nec.quantize(Nec.build(it.bytes, repeatCodes = 1, t = NecTiming.REMOTE), 38_000) },
+        Variant("Replay of real remote capture, 38k", 38_000) { Captured.CAPTURED[it] },
+        Variant("Replay of capture, Pronto-style, 38k", 38_000) {
+            Captured.CAPTURED[it]?.let { p -> Nec.quantize(p, 38_000) } },
     )
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -196,8 +205,10 @@ class TesterActivity : Activity() {
         logLine("=== Sweep: ${testButton.label} (cmd 0x%02X) ===".format(testButton.command))
         for ((i, v) in variants.withIndex()) {
             if (cancelled) return
+            val pattern = v.build(testButton)
+            if (pattern == null) { logLine("#${i + 1} ${v.name}: no capture for ${testButton.label}, skipped"); continue }
             ui { big.text = "${i + 1}" }
-            tx(v.carrier, v.build(testButton.bytes), "#${i + 1} ${v.name}")
+            tx(v.carrier, pattern, "#${i + 1} ${v.name}")
             for (k in 0 until 30) { if (cancelled) return; SystemClock.sleep(100) }
         }
         logLine("Sweep done. Tell me which number(s) the fan reacted to (or none).")

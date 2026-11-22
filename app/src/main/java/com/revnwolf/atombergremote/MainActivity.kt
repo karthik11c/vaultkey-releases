@@ -90,8 +90,8 @@ class MainActivity : Activity() {
             status.text = getString(R.string.no_ir)
             return
         }
-        val pattern = NecEncoder.pattern(button.command, mode, carrierHz)
-        val expectedMs = NecEncoder.durationMs(NecEncoder.pattern(button.command,
+        val pattern = NecEncoder.pattern(button, mode, carrierHz)
+        val expectedMs = NecEncoder.durationMs(NecEncoder.pattern(button,
             if (mode == SignalMode.LEGACY) SignalMode.STANDARD else mode))
         sender.execute {
             val t0 = SystemClock.elapsedRealtime()

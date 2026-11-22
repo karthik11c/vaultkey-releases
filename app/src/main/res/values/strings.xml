@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Atomberg Remote</string>
+    <string name="ready">Point the top of your phone at the fan</string>
+    <string name="no_ir">This phone has no IR blaster</string>
+    <string name="sent">Sent: %1$s</string>
+    <string name="send_failed">Send failed: %1$s</string>
+</resources>

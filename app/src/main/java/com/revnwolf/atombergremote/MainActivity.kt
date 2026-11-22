@@ -17,7 +17,7 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var diag: TextView
     private lateinit var modeBtn: Button
-    private var mode = SignalMode.STANDARD
+    private var mode = SignalMode.DOUBLE
     private var carrierHz = NecEncoder.CARRIER_HZ
     private var deviceInfo = ""
     private val sender = Executors.newSingleThreadExecutor() // transmit() blocks until sent
@@ -30,11 +30,11 @@ class MainActivity : Activity() {
         modeBtn = findViewById(R.id.btnMode)
 
         val prefs = getPreferences(Context.MODE_PRIVATE)
-        mode = SignalMode.entries.getOrElse(prefs.getInt("mode", 0)) { SignalMode.STANDARD }
+        mode = SignalMode.entries.firstOrNull { it.name == prefs.getString("mode_name", null) } ?: SignalMode.DOUBLE
         modeBtn.text = getString(R.string.mode, mode.label)
         modeBtn.setOnClickListener {
             mode = SignalMode.entries[(mode.ordinal + 1) % SignalMode.entries.size]
-            prefs.edit().putInt("mode", mode.ordinal).apply()
+            prefs.edit().putString("mode_name", mode.name).apply()
             modeBtn.text = getString(R.string.mode, mode.label)
         }
 
@@ -90,13 +90,17 @@ class MainActivity : Activity() {
             status.text = getString(R.string.no_ir)
             return
         }
-        val pattern = NecEncoder.pattern(button, mode, carrierHz)
-        val expectedMs = NecEncoder.durationMs(NecEncoder.pattern(button,
-            if (mode == SignalMode.LEGACY) SignalMode.STANDARD else mode))
+        val calls = NecEncoder.calls(button, mode, carrierHz)
+        val expectedMs = if (mode == SignalMode.LEGACY) NecEncoder.durationMs(NecEncoder.pattern(button, SignalMode.STANDARD))
+                         else calls.sumOf { NecEncoder.durationMs(it) }
         sender.execute {
             val t0 = SystemClock.elapsedRealtime()
             val error = try {
-                manager.transmit(carrierHz, pattern); null
+                calls.forEachIndexed { i, p ->
+                    if (i > 0) SystemClock.sleep(2)
+                    manager.transmit(carrierHz, p)
+                }
+                null
             } catch (e: Exception) {
                 e.javaClass.simpleName + (e.message?.let { ": $it" } ?: "")
             }

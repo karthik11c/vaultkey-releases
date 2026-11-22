@@ -28,6 +28,7 @@ enum class AtombergButton(val label: String, val command: Int) {
 
 /** How the pattern is handed to the phone's IR HAL. Different OEM HALs need different shapes. */
 enum class SignalMode(val label: String) {
+    DOUBLE("Double-send"),      // same frame in two back-to-back transmit() calls (proven on iQOO 13)
     STANDARD("Standard"),       // one NEC frame, padded with a trailing gap (even-length pattern)
     STRONG("Strong (repeat)"),  // NEC frame + 2 NEC repeat codes, like holding the key briefly
     LEGACY("Legacy (cycles)"),  // STANDARD expressed in carrier cycles (old Samsung/HTC-style HALs)
@@ -39,6 +40,7 @@ object NecEncoder {
     const val CARRIER_HZ = 38_000
 
     fun pattern(button: AtombergButton, mode: SignalMode, carrierHz: Int = CARRIER_HZ): IntArray = when (mode) {
+        SignalMode.DOUBLE -> Nec.doubleSend(button.bytes)[0]
         SignalMode.STANDARD -> Nec.build(button.bytes)
         SignalMode.STRONG -> Nec.build(button.bytes, repeatCodes = 2)
         SignalMode.LEGACY -> Nec.toCycles(Nec.build(button.bytes), carrierHz)
@@ -46,6 +48,14 @@ object NecEncoder {
             ?: Nec.build(button.bytes, repeatCodes = 1, t = NecTiming.REMOTE)
         SignalMode.PRONTO -> Nec.quantize(Nec.build(button.bytes, repeatCodes = 1, t = NecTiming.REMOTE), carrierHz)
     }
+
+    /**
+     * Transmit calls to make, in order, ~2 ms apart. DOUBLE mirrors the "Atomberg BLDC Fan Remote"
+     * app (The RMP Apps), which works on vivo/iQOO: one plain NEC frame, then the same frame again
+     * in a second call ending with a 1000 µs mark.
+     */
+    fun calls(button: AtombergButton, mode: SignalMode, carrierHz: Int = CARRIER_HZ): List<IntArray> =
+        if (mode == SignalMode.DOUBLE) Nec.doubleSend(button.bytes) else listOf(pattern(button, mode, carrierHz))
 
     fun durationMs(pattern: IntArray): Long = pattern.sumOf { it.toLong() } / 1000
 }
@@ -56,6 +66,8 @@ data class NecTiming(val hdrMark: Int, val hdrSpace: Int, val repeatSpace: Int, 
         val SPEC = NecTiming(9000, 4500, 2250, 562, 562, 1687)
         /** Averages measured from a real Atomberg remote capture. */
         val REMOTE = NecTiming(9410, 4680, 2340, 600, 580, 1750)
+        /** Round values used by the working third-party app. */
+        val ROUND = NecTiming(9000, 4500, 2250, 560, 560, 1690)
     }
 }
 
@@ -105,6 +117,13 @@ object Nec {
     /** 32-bit value as printed by Arduino IRremote (MSB first), e.g. 0x00CF8976. */
     fun bytesFromMsb32(v: Long) = IntArray(4) { i ->
         Integer.reverse(((v shr (24 - 8 * i)) and 0xFF).toInt()) ushr 24
+    }
+
+    /** Two separate transmit() payloads: plain frame (odd length), then the same frame ending in a 1000 µs mark. */
+    fun doubleSend(bytes: IntArray): List<IntArray> {
+        val first = build(bytes, trailingGap = false, t = NecTiming.ROUND)
+        val second = first.copyOf().also { it[it.size - 1] = 1000 }
+        return listOf(first, second)
     }
 
     /** Round every duration to whole carrier cycles, as Pronto-based remote apps send them. */

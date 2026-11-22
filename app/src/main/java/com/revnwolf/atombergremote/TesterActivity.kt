@@ -48,28 +48,36 @@ class TesterActivity : Activity() {
     private lateinit var scroll: ScrollView
     private val time = SimpleDateFormat("HH:mm:ss", Locale.US)
 
-    private data class Variant(val name: String, val carrier: Int, val build: (AtombergButton) -> IntArray?)
+    /** One sweep entry: the transmit() payloads to send ~2 ms apart (null = not available for this button). */
+    private class Variant(val name: String, val carrier: Int, val calls: (AtombergButton) -> List<IntArray>?)
+
+    private fun single(name: String, carrier: Int, build: (AtombergButton) -> IntArray?) =
+        Variant(name, carrier) { b -> build(b)?.let { listOf(it) } }
 
     private val variants = listOf(
-        Variant("NEC 1 frame + gap, 38k", 38_000) { Nec.build(it.bytes) },
-        Variant("NEC 1 frame, no gap (odd len), 38k", 38_000) { Nec.build(it.bytes, trailingGap = false) },
-        Variant("NEC frame + 2 repeats, 38k", 38_000) { Nec.build(it.bytes, repeatCodes = 2) },
-        Variant("NEC 2 full frames, 38k", 38_000) { Nec.build(it.bytes, frames = 2) },
-        Variant("NEC 3 full frames, 38k", 38_000) { Nec.build(it.bytes, frames = 3) },
-        Variant("NEC frame + gap, 36k", 36_000) { Nec.build(it.bytes) },
-        Variant("NEC frame + gap, 40k", 40_000) { Nec.build(it.bytes) },
-        Variant("NEC frame + 2 repeats, 36k", 36_000) { Nec.build(it.bytes, repeatCodes = 2) },
-        Variant("NEC frame + 2 repeats, 40k", 40_000) { Nec.build(it.bytes, repeatCodes = 2) },
-        Variant("NEC 3 frames, 10ms gaps, 38k", 38_000) { Nec.build(it.bytes, frames = 3, gap = 10_000) },
-        Variant("Pronto-style (whole cycles) + 1 repeat, 38k", 38_000) {
+        single("NEC 1 frame + gap, 38k", 38_000) { Nec.build(it.bytes) },
+        single("NEC 1 frame, no gap (odd len), 38k", 38_000) { Nec.build(it.bytes, trailingGap = false) },
+        single("NEC frame + 2 repeats, 38k", 38_000) { Nec.build(it.bytes, repeatCodes = 2) },
+        single("NEC 2 full frames, 38k", 38_000) { Nec.build(it.bytes, frames = 2) },
+        single("NEC 3 full frames, 38k", 38_000) { Nec.build(it.bytes, frames = 3) },
+        single("NEC frame + gap, 36k", 36_000) { Nec.build(it.bytes) },
+        single("NEC frame + gap, 40k", 40_000) { Nec.build(it.bytes) },
+        single("NEC frame + 2 repeats, 36k", 36_000) { Nec.build(it.bytes, repeatCodes = 2) },
+        single("NEC frame + 2 repeats, 40k", 40_000) { Nec.build(it.bytes, repeatCodes = 2) },
+        single("NEC 3 frames, 10ms gaps, 38k", 38_000) { Nec.build(it.bytes, frames = 3, gap = 10_000) },
+        single("Pronto-style (whole cycles) + 1 repeat, 38k", 38_000) {
             Nec.quantize(Nec.build(it.bytes, repeatCodes = 1), 38_000) },
-        Variant("Real-remote timing + 1 repeat, 38k", 38_000) {
+        single("Real-remote timing + 1 repeat, 38k", 38_000) {
             Nec.build(it.bytes, repeatCodes = 1, t = NecTiming.REMOTE) },
-        Variant("Real-remote timing, Pronto-style, 38k", 38_000) {
+        single("Real-remote timing, Pronto-style, 38k", 38_000) {
             Nec.quantize(Nec.build(it.bytes, repeatCodes = 1, t = NecTiming.REMOTE), 38_000) },
-        Variant("Replay of real remote capture, 38k", 38_000) { Captured.CAPTURED[it] },
-        Variant("Replay of capture, Pronto-style, 38k", 38_000) {
+        single("Replay of real remote capture, 38k", 38_000) { Captured.CAPTURED[it] },
+        single("Replay of capture, Pronto-style, 38k", 38_000) {
             Captured.CAPTURED[it]?.let { p -> Nec.quantize(p, 38_000) } },
+        Variant("Double-send: 2 calls, 2 ms apart (like RMP app)", 38_000) { Nec.doubleSend(it.bytes) },
+        single("Double frame in ONE call, 3 ms gap", 38_000) {
+            val (a, b) = Nec.doubleSend(it.bytes); a + intArrayOf(3_000) + b },
+        Variant("2 calls of variant #1 (frame + gap)", 38_000) { b -> List(2) { Nec.build(b.bytes) } },
     )
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -222,11 +230,14 @@ class TesterActivity : Activity() {
         try {
             for ((i, v) in variants.withIndex()) {
                 if (cancelled) return
-                val pattern = v.build(testButton)
-                if (pattern == null) { logLine("#${i + 1} ${v.name}: no capture for ${testButton.label}, skipped"); continue }
+                val calls = v.calls(testButton)
+                if (calls == null) { logLine("#${i + 1} ${v.name}: no capture for ${testButton.label}, skipped"); continue }
                 currentVariant = i + 1
                 ui { big.text = "${i + 1} / ${variants.size}" }
-                tx(v.carrier, pattern, "#${i + 1} ${v.name}")
+                calls.forEachIndexed { c, p ->
+                    if (c > 0) SystemClock.sleep(2)
+                    tx(v.carrier, p, "#${i + 1}${if (calls.size > 1) "." + (c + 1) else ""} ${v.name}")
+                }
                 // 5 s window: the fan's beep / change and the user's tap both land on this number
                 for (k in 0 until 50) { if (cancelled) return; SystemClock.sleep(100) }
             }

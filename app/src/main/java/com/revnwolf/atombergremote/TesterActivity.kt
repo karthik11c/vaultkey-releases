@@ -41,6 +41,9 @@ class TesterActivity : Activity() {
     private lateinit var log: TextView
     private lateinit var big: TextView
     private lateinit var stop: Button
+    private lateinit var reacted: Button
+    @Volatile private var currentVariant = 0
+    private val hits = java.util.Collections.synchronizedSet(sortedSetOf<Int>())
     private lateinit var input: EditText
     private lateinit var scroll: ScrollView
     private val time = SimpleDateFormat("HH:mm:ss", Locale.US)
@@ -94,6 +97,17 @@ class TesterActivity : Activity() {
         root.addView(big)
         stop = button("■ Stop") { cancelled = true }.apply { visibility = View.GONE }
         root.addView(stop)
+        reacted = button("✋ Fan reacted!") {
+            val n = currentVariant
+            if (n > 0 && hits.add(n)) logLine("👉 Fan reacted at #$n ${variants[n - 1].name}")
+            Toast.makeText(this, "Marked #$n", Toast.LENGTH_SHORT).show()
+        }.apply {
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(96))
+            textSize = 22f
+            setBackgroundResource(R.drawable.power_bg)
+        }
+        root.addView(reacted)
 
         root.addView(section("1 · Hardware"))
         root.addView(row(button("Device report") { logLine(deviceReport()) },
@@ -105,8 +119,8 @@ class TesterActivity : Activity() {
         root.addView(button("Camera beacon (10 s)") { run("Beacon") { beacon() } })
 
         root.addView(section("3 · Which signal does the fan accept?"))
-        root.addView(text("Sends the chosen button in ${variants.size} variants, 3 s apart, with a big " +
-            "number on screen. Stand 1–2 m from the fan; note the number when it reacts.", 13f, muted = true))
+        root.addView(text("Sends the chosen button in ${variants.size} variants, 5 s apart, with a big " +
+            "number on screen. Stand 1–2 m from the fan; tap “Fan reacted!” whenever it beeps or changes.", 13f, muted = true))
         val pick = button("") {}
         fun refreshPick() { pick.text = "Test button: ${testButton.label} (tap to change)" }
         pick.setOnClickListener {
@@ -203,15 +217,26 @@ class TesterActivity : Activity() {
 
     private fun sweep() {
         logLine("=== Sweep: ${testButton.label} (cmd 0x%02X) ===".format(testButton.command))
-        for ((i, v) in variants.withIndex()) {
-            if (cancelled) return
-            val pattern = v.build(testButton)
-            if (pattern == null) { logLine("#${i + 1} ${v.name}: no capture for ${testButton.label}, skipped"); continue }
-            ui { big.text = "${i + 1}" }
-            tx(v.carrier, pattern, "#${i + 1} ${v.name}")
-            for (k in 0 until 30) { if (cancelled) return; SystemClock.sleep(100) }
+        hits.clear()
+        ui { reacted.visibility = View.VISIBLE }
+        try {
+            for ((i, v) in variants.withIndex()) {
+                if (cancelled) return
+                val pattern = v.build(testButton)
+                if (pattern == null) { logLine("#${i + 1} ${v.name}: no capture for ${testButton.label}, skipped"); continue }
+                currentVariant = i + 1
+                ui { big.text = "${i + 1} / ${variants.size}" }
+                tx(v.carrier, pattern, "#${i + 1} ${v.name}")
+                // 5 s window: the fan's beep / change and the user's tap both land on this number
+                for (k in 0 until 50) { if (cancelled) return; SystemClock.sleep(100) }
+            }
+            val result = hits.toList()
+            logLine(if (result.isEmpty()) "Sweep done. ✗ No variant marked as working."
+                    else "Sweep done. ✓ Working variant(s): ${result.joinToString { "#$it" }}")
+        } finally {
+            currentVariant = 0
+            ui { reacted.visibility = View.GONE }
         }
-        logLine("Sweep done. Tell me which number(s) the fan reacted to (or none).")
     }
 
     private fun sendCustom(times: Int) {

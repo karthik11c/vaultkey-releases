@@ -38,6 +38,10 @@ class MainActivity : Activity() {
             modeBtn.text = getString(R.string.mode, mode.label)
         }
 
+        findViewById<Button>(R.id.btnTester).setOnClickListener {
+            startActivity(android.content.Intent(this, TesterActivity::class.java))
+        }
+
         ir = getSystemService(Context.CONSUMER_IR_SERVICE) as? ConsumerIrManager
         probe()
 

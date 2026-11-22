@@ -46,6 +46,14 @@
             android:textSize="14sp" />
 
         <Button
+            android:id="@+id/btnTester"
+            style="@style/RemoteKey"
+            android:layout_width="match_parent"
+            android:layout_weight="0"
+            android:text="🔧  IR Tester / Diagnose"
+            android:textSize="14sp" />
+
+        <Button
             android:id="@+id/btnPower"
             android:layout_width="104dp"
             android:layout_height="104dp"

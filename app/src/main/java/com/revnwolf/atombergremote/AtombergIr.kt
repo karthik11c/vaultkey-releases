@@ -28,7 +28,8 @@ enum class AtombergButton(val label: String, val command: Int) {
 
 /** How the pattern is handed to the phone's IR HAL. Different OEM HALs need different shapes. */
 enum class SignalMode(val label: String) {
-    DOUBLE("Double-send"),      // same frame in two back-to-back transmit() calls (proven on iQOO 13)
+    DOUBLE("Double-send"),
+    PLAIN("Plain NEC"),         // single 67-value call, 560/1690 µs (github.com/Mobasheera/Atomberg-BLDC-IR-Remote)      // same frame in two back-to-back transmit() calls (proven on iQOO 13)
     STANDARD("Standard"),       // one NEC frame, padded with a trailing gap (even-length pattern)
     STRONG("Strong (repeat)"),  // NEC frame + 2 NEC repeat codes, like holding the key briefly
     LEGACY("Legacy (cycles)"),  // STANDARD expressed in carrier cycles (old Samsung/HTC-style HALs)
@@ -41,6 +42,7 @@ object NecEncoder {
 
     fun pattern(button: AtombergButton, mode: SignalMode, carrierHz: Int = CARRIER_HZ): IntArray = when (mode) {
         SignalMode.DOUBLE -> Nec.doubleSend(button.bytes)[0]
+        SignalMode.PLAIN -> Nec.build(button.bytes, trailingGap = false, t = NecTiming.ROUND)
         SignalMode.STANDARD -> Nec.build(button.bytes)
         SignalMode.STRONG -> Nec.build(button.bytes, repeatCodes = 2)
         SignalMode.LEGACY -> Nec.toCycles(Nec.build(button.bytes), carrierHz)
